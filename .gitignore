@@ -1,9 +1,18 @@
-cat << 'EOF' > .gitignore
 venv/
+.venv/
+
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+
 .env
-data/
+
+data/facts.sqlite
 *.sqlite
-chroma_db/
-EOF
+*.db
+
+.vscode/
+.idea/
+
+New_But_Not_Working/
+Old_Too_Many_LLm_Calls/
