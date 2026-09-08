@@ -1,4 +1,5 @@
-from typing import Dict, List, Optional, Tuple
+import logging
+from typing import Any, Dict, List
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_mistralai import ChatMistralAI
@@ -7,6 +8,8 @@ from config import settings
 from src.llm.prompts import SYSTEM_PROMPT, USER_PROMPT
 from src.schemas.context import CompactContext, ContextEvidence
 from src.schemas.extraction import ExtractedFact, FactExtractionBatch
+
+logger = logging.getLogger(__name__)
 
 
 class FactExtractor:
@@ -36,10 +39,12 @@ class FactExtractor:
         self.chain = self.prompt | self.llm
 
     @staticmethod
-    def _serialize_context(context: CompactContext) -> str:
+    def _serialize_context(
+        context: CompactContext,
+    ) -> str:
         """
-        Convert structured context into the text format expected by
-        the extraction prompt.
+        Serialize structured document evidence into the exact
+        text representation expected by the extraction prompt.
         """
         parts: List[str] = []
 
@@ -50,13 +55,13 @@ class FactExtractor:
                 f"PAGE: {evidence.page_number}\n"
             )
 
-            if evidence.element_type:
+            if getattr(evidence, "element_type", None):
                 header += f"ELEMENT_TYPE: {evidence.element_type}\n"
 
-            if evidence.table_ref:
+            if getattr(evidence, "table_ref", None):
                 header += f"TABLE_REF: {evidence.table_ref}\n"
 
-            if evidence.table_headers:
+            if getattr(evidence, "table_headers", None):
                 header += (
                     "TABLE_HEADERS:\n"
                     + "\n".join(
@@ -66,7 +71,7 @@ class FactExtractor:
                     + "\n"
                 )
 
-            if evidence.table_rows:
+            if getattr(evidence, "table_rows", None):
                 header += "TABLE_ROWS:\n"
                 for row_index, row in enumerate(evidence.table_rows):
                     header += f"  ROW {row_index}:\n"
@@ -93,7 +98,7 @@ class FactExtractor:
     ) -> Dict[str, ContextEvidence]:
         table_lookup: Dict[str, ContextEvidence] = {}
         for evidence in context.evidence:
-            if evidence.table_ref:
+            if getattr(evidence, "table_ref", None):
                 table_lookup[evidence.table_ref] = evidence
         return table_lookup
 
@@ -103,14 +108,14 @@ class FactExtractor:
         table_lookup: Dict[str, ContextEvidence],
     ) -> bool:
         """
-        Validate table coordinates against the supplied table evidence
-        and ensure deterministic value attribution.
+        Validate coordinates against structured table evidence, then bind
+        the ground-truth cell value and provenance deterministically.
         """
         if not fact.table_ref:
             return False
 
         evidence = table_lookup.get(fact.table_ref)
-        if evidence is None or not evidence.table_rows:
+        if evidence is None or not getattr(evidence, "table_rows", None):
             return False
 
         if fact.row_index is None or fact.column_index is None:
@@ -124,26 +129,28 @@ class FactExtractor:
         if not (0 <= fact.column_index < len(row)):
             return False
 
-        cell_value = row[fact.column_index].strip()
+        cell_value = str(row[fact.column_index]).strip()
         if not cell_value:
             return False
 
-        # Enforce application-owned actual value and column name
+        # Bind application-controlled structural values
         fact.raw_value = cell_value
 
-        if evidence.table_headers and fact.column_index < len(evidence.table_headers):
+        if (
+            getattr(evidence, "table_headers", None)
+            and fact.column_index < len(evidence.table_headers)
+        ):
             fact.column_name = evidence.table_headers[fact.column_index]
 
         if (
-            evidence.table_evidence_ids
+            getattr(evidence, "table_evidence_ids", None)
             and fact.row_index < len(evidence.table_evidence_ids)
         ):
             fact.evidence_id = evidence.table_evidence_ids[fact.row_index]
         else:
             fact.evidence_id = f"{fact.table_ref}:row:{fact.row_index}"
 
-        fact.exact_quote = " | ".join(row)
-
+        fact.exact_quote = " | ".join(str(cell) for cell in row)
         return True
 
     @staticmethod
@@ -152,8 +159,11 @@ class FactExtractor:
         evidence_lookup: Dict[str, ContextEvidence],
     ) -> bool:
         """
-        Validate that a prose fact points to an existing evidence unit
-        and that the quoted text is grounded in that evidence.
+        Validate prose provenance and require the quote to be an
+        exact substring of the referenced evidence.
+
+        Also require raw_value to occur in the exact quote whenever
+        a raw_value exists to eliminate ungrounded textual paraphrases.
         """
         if not fact.evidence_id:
             return False
@@ -171,13 +181,24 @@ class FactExtractor:
         if not quote or not source_text:
             return False
 
-        if quote in source_text:
-            return True
+        # Support exact match first, then whitespace-normalized match
+        if quote not in source_text:
+            norm_quote = " ".join(quote.split()).lower()
+            norm_source = " ".join(source_text.split()).lower()
+            if norm_quote not in norm_source:
+                return False
 
-        normalized_quote = " ".join(quote.split()).lower()
-        normalized_source = " ".join(source_text.split()).lower()
+        if (
+            fact.raw_value
+            and fact.raw_value.strip()
+            and fact.raw_value.strip() not in quote
+        ):
+            norm_val = " ".join(fact.raw_value.split()).lower()
+            norm_quote = " ".join(quote.split()).lower()
+            if norm_val not in norm_quote:
+                return False
 
-        return normalized_quote in normalized_source
+        return True
 
     def _ground(
         self,
@@ -185,11 +206,10 @@ class FactExtractor:
         context: CompactContext,
     ) -> List[ExtractedFact]:
         """
-        Validate every extracted fact against the original context.
+        Validate extracted facts against the original context.
 
-        Invalid or incomplete facts are retained with an explicit status
-        so the caller can inspect extraction failures without allowing
-        them into downstream matching.
+        Facts are retained for inspection even when invalid, but only
+        VALID facts are eligible for downstream matching.
         """
         evidence_lookup = self._build_evidence_lookup(context)
         table_lookup = self._build_table_lookup(context)
@@ -197,16 +217,20 @@ class FactExtractor:
         grounded: List[ExtractedFact] = []
 
         for fact in facts:
-            # Drop untrusted LLM-generated normalized values
+            # Model-provided normalized values are not authoritative
             fact.normalized_value = None
 
-            # Basic required-field validation
-            if not fact.entity or not fact.attribute or not fact.raw_value:
+            # Basic field presence validation
+            if (
+                not fact.entity
+                or not fact.attribute
+                or not fact.raw_value
+            ):
                 fact.status = "UNCERTAIN"
                 grounded.append(fact)
                 continue
 
-            # Table fact grounding
+            # Table fact verification
             if fact.table_ref:
                 if self._ground_table_fact(fact, table_lookup):
                     fact.status = "VALID"
@@ -221,7 +245,7 @@ class FactExtractor:
                 grounded.append(fact)
                 continue
 
-            # Prose fact grounding
+            # Prose fact verification
             if fact.evidence_id:
                 if self._ground_prose_fact(fact, evidence_lookup):
                     fact.status = "VALID"
@@ -248,25 +272,22 @@ class FactExtractor:
         context: CompactContext,
     ) -> List[ExtractedFact]:
         """
-        Run one structured Mistral extraction call and validate
-        provenance deterministically.
+        Execute exactly one structured Mistral extraction call
+        for the supplied context.
 
-        Malformed structured output is treated as an extraction
-        failure for this context rather than crashing the API.
+        Malformed structured output is handled as an extraction
+        failure instead of crashing the API.
         """
         evidence_text = self._serialize_context(context)
 
         try:
             response: FactExtractionBatch = self.chain.invoke(
-                {
-                    "evidence": evidence_text,
-                }
+                {"evidence": evidence_text}
             )
         except Exception as exc:
             print(
-                "[Extractor] Structured output failed: "
-                f"context={context.context_id} "
-                f"error={exc}"
+                f"[Extractor] Structured output failed: "
+                f"context={context.context_id} error={exc}"
             )
             return []
 

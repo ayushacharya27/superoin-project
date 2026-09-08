@@ -14,6 +14,7 @@ from src.matcher.resolve import FactMatcher
 from src.pipeline.document_chunking import build_structured_chunks
 from src.pipeline.document_cleanup import clean_document_elements
 from src.pipeline.document_structure import extract_document_elements
+from src.pipeline.fact_canonicalizer import canonicalize_facts
 from src.pipeline.llm_filter import filter_for_llm
 from src.schemas.context import CompactContext
 from src.schemas.extraction import ExtractedFact
@@ -132,7 +133,6 @@ def _context_relevance_score(context: CompactContext) -> int:
         if keyword in text:
             score += weight
 
-    # Dense numeric regions correlate with substantive financial metrics
     score += min(
         sum(
             1
@@ -182,7 +182,7 @@ def process_pdf(pdf_path: str, filename: str) -> Dict[str, Any]:
     - filter out non-substantive structural furniture (TOC, contacts)
     - build structured bounded chunks
     - select the highest-scoring context
-    - execute deterministic extraction and grounding
+    - execute deterministic extraction, grounding, and canonicalization
     """
     raw = extract_document_elements(pdf_path)
     clean = clean_document_elements(raw)
@@ -204,7 +204,9 @@ def process_pdf(pdf_path: str, filename: str) -> Dict[str, Any]:
             f"evidence={len(selected_context.evidence)}"
         )
 
-        facts.extend(extractor.extract(selected_context))
+        extracted_facts = extractor.extract(selected_context)
+        canonical_facts = canonicalize_facts(extracted_facts)
+        facts.extend(canonical_facts)
 
     return {
         "filename": filename,

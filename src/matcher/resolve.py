@@ -5,29 +5,26 @@ from src.matcher.embeddings import CandidatePair, FactEmbeddingIndex
 
 
 class FactMatcher:
-    def __init__(self, similarity_threshold: float = 0.75) -> None:
+    def __init__(
+        self,
+        similarity_threshold: float = 0.75,
+    ) -> None:
         self.similarity_threshold = similarity_threshold
         self.embedding_index = FactEmbeddingIndex()
 
     @staticmethod
-    def _value_number(raw_value: Optional[str]) -> Optional[float]:
+    def _value_number(
+        raw_value: Optional[str],
+    ) -> Optional[float]:
         """
-        Convert common numeric representations into a comparable float.
-
-        Examples:
-            ₹81,415Mn
-            Rs. 127 Cr
-            1.6%
-            -Rs. 452 Cr
-            (452 Cr)
-            2.8 Billion
+        Parse common numeric representations into comparable floats.
         """
         if not raw_value:
             return None
 
         text = str(raw_value).lower().strip()
 
-        # Handle accounting parentheses: (123.45)
+        # Handle accounting negative parenthesized notation: (123.45)
         if text.startswith("(") and text.endswith(")"):
             text = f"-{text[1:-1]}"
 
@@ -49,33 +46,34 @@ class FactMatcher:
             value *= 1_000_000_000
         elif "million" in text or re.search(r"\bmn\b", text):
             value *= 1_000_000
-        elif "crore" in text or re.search(r"\bcr\b", text):
-            value *= 10_000_000
-        elif "lakh" in text or re.search(r"\blac\b", text):
-            value *= 100_000
         elif "thousand" in text or re.search(r"\bk\b", text):
             value *= 1_000
+        elif re.search(r"\bcr\b", text):
+            value *= 10_000_000
         elif re.search(r"\bm\b", text):
             value *= 1_000_000
 
-        return -value if negative else value
+        if negative:
+            value = -value
+
+        return value
 
     @staticmethod
-    def _norm_text(value: Optional[str]) -> str:
+    def _norm_text(
+        value: Optional[str],
+    ) -> str:
         if not value:
             return ""
 
         value = str(value).lower().strip()
         value = re.sub(r"[^a-z0-9%]+", " ", value)
         value = re.sub(r"\s+", " ", value)
-
         return value.strip()
 
     @staticmethod
-    def _document_of(fact: Any) -> str:
-        """
-        Recover the originating document from provenance information.
-        """
+    def _document_of(
+        fact: Any,
+    ) -> str:
         source_file = getattr(fact, "source_file", None)
         if source_file:
             return str(source_file)
@@ -91,17 +89,19 @@ class FactMatcher:
         return "unknown"
 
     @classmethod
-    def _attribute_tokens(cls, value: Optional[str]) -> Set[str]:
+    def _attribute_tokens(
+        cls,
+        value: Optional[str],
+    ) -> Set[str]:
         """
         Normalize an attribute into semantic tokens.
 
-        Time/context words are removed, while meaningful metric concepts
-        are preserved for compatibility checking.
+        Time markers are excluded from metric identity; meaningful
+        dimensions such as adjusted, margin, and growth remain.
         """
         text = cls._norm_text(value)
 
         stop = {
-            # Grammar
             "the",
             "of",
             "from",
@@ -112,7 +112,6 @@ class FactMatcher:
             "to",
             "and",
             "by",
-            # Time/context
             "fy",
             "q1",
             "q2",
@@ -126,11 +125,6 @@ class FactMatcher:
             "mom",
             "since",
             "inception",
-            # Generic modifiers
-            "total",
-            "overall",
-            "adjusted",
-            "adj",
         }
 
         return {
@@ -140,10 +134,11 @@ class FactMatcher:
         }
 
     @classmethod
-    def _entity_compatible(cls, a: Any, b: Any) -> bool:
-        """
-        Require entities to be identical or obvious name variants.
-        """
+    def _entity_compatible(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
         entity_a = cls._norm_text(getattr(a, "entity", None))
         entity_b = cls._norm_text(getattr(b, "entity", None))
 
@@ -157,15 +152,18 @@ class FactMatcher:
         )
 
     @classmethod
-    def _attribute_compatible(cls, a: Any, b: Any) -> bool:
+    def _attribute_compatible(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
         """
-        Determine whether two attributes describe the same metric.
+        Conservative metric identity check.
 
-        Conservative policy:
-        - exact semantic token sets are compatible
-        - one token set can be a subset of the other only when the
-          additional tokens are non-semantic
-        - genuinely different metric dimensions are rejected
+        Examples:
+            EBITDA margin vs FY24 EBITDA margin -> compatible
+            EBITDA margin vs Adjusted EBITDA margin -> incompatible
+            Express parcel shipment vs Express parcel shipment YoY change -> incompatible
         """
         attr_a = cls._attribute_tokens(getattr(a, "attribute", None))
         attr_b = cls._attribute_tokens(getattr(b, "attribute", None))
@@ -173,20 +171,21 @@ class FactMatcher:
         if not attr_a or not attr_b:
             return False
 
-        # Exact semantic match
         if attr_a == attr_b:
             return True
 
-        # One side must at least be a subset
+        # A strict subset is only allowed when extra tokens are purely contextual
         if not (attr_a.issubset(attr_b) or attr_b.issubset(attr_a)):
             return False
 
         extra = (attr_b - attr_a) if attr_a.issubset(attr_b) else (attr_a - attr_b)
 
-        # Distinct metric dimensions
         semantic_dimensions = {
+            "adjusted",
+            "adj",
             "margin",
             "growth",
+            "change",
             "rate",
             "ratio",
             "share",
@@ -195,10 +194,8 @@ class FactMatcher:
             "value",
             "count",
             "size",
+            "ton",
             "tonnage",
-            "tonnes",
-            "tons",
-            "shipments",
             "shipment",
             "revenue",
             "sales",
@@ -207,49 +204,116 @@ class FactMatcher:
             "profit",
             "loss",
             "fleet",
-            "centers",
-            "centres",
-            "facilities",
-            "hubs",
+            "customer",
+            "order",
+            "center",
+            "facility",
+            "hub",
         }
 
-        # A differing core metric dimension implies a distinct business metric
         if extra & semantic_dimensions:
             return False
 
         return True
 
     @classmethod
-    def _same_context(cls, a: Any, b: Any) -> bool:
-        """
-        True only when both explicit time and scope are non-empty and match.
-        """
+    def _same_time(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
         time_a = cls._norm_text(getattr(a, "time", None))
         time_b = cls._norm_text(getattr(b, "time", None))
 
-        scope_a = cls._norm_text(getattr(a, "scope", None))
-        scope_b = cls._norm_text(getattr(b, "scope", None))
-
-        if not time_a or not time_b or not scope_a or not scope_b:
-            return False
-
-        return time_a == time_b and scope_a == scope_b
+        # Both must be explicitly present and equal
+        return bool(time_a and time_b and time_a == time_b)
 
     @classmethod
-    def _context_differs(cls, a: Any, b: Any) -> bool:
-        """
-        True when at least one explicit context dimension disagrees.
-        """
+    def _time_differs(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
         time_a = cls._norm_text(getattr(a, "time", None))
         time_b = cls._norm_text(getattr(b, "time", None))
 
+        return bool(time_a and time_b and time_a != time_b)
+
+    @classmethod
+    def _same_scope(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
         scope_a = cls._norm_text(getattr(a, "scope", None))
         scope_b = cls._norm_text(getattr(b, "scope", None))
 
-        time_differs = bool(time_a and time_b and time_a != time_b)
-        scope_differs = bool(scope_a and scope_b and scope_a != scope_b)
+        return bool(scope_a and scope_b and scope_a == scope_b)
 
-        return time_differs or scope_differs
+    @classmethod
+    def _scope_differs(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
+        scope_a = cls._norm_text(getattr(a, "scope", None))
+        scope_b = cls._norm_text(getattr(b, "scope", None))
+
+        return bool(scope_a and scope_b and scope_a != scope_b)
+
+    @classmethod
+    def _same_context(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
+        """
+        Require every explicitly supplied context dimension to agree.
+        Missing context does not automatically count as equal.
+        """
+        times_present = bool(getattr(a, "time", None) or getattr(b, "time", None))
+        scopes_present = bool(getattr(a, "scope", None) or getattr(b, "scope", None))
+
+        time_same = cls._same_time(a, b) if times_present else True
+        scope_same = cls._same_scope(a, b) if scopes_present else True
+
+        return time_same and scope_same
+
+    @classmethod
+    def _has_explicit_context_difference(
+        cls,
+        a: Any,
+        b: Any,
+    ) -> bool:
+        return cls._time_differs(a, b) or cls._scope_differs(a, b)
+
+    @classmethod
+    def _unit_type(
+        cls,
+        fact: Any,
+    ) -> str:
+        """
+        Coarse value type to prevent comparisons such as percentage vs currency.
+        """
+        raw = getattr(fact, "raw_value", None) or ""
+        text = str(raw).lower()
+
+        if "%" in text:
+            return "PERCENT"
+
+        if (
+            re.search(r"\b(cr|mn|million|billion|thousand|rs|₹)\b", text)
+            or "₹" in str(raw)
+        ):
+            return "CURRENCY"
+
+        if re.search(r"\b(ton|tons|tonne|tonnes|shipment|shipments)\b", text):
+            return "VOLUME"
+
+        if cls._value_number(raw) is not None:
+            return "NUMBER"
+
+        return "TEXT"
 
     @classmethod
     def classify(
@@ -259,82 +323,114 @@ class FactMatcher:
         similarity: float,
     ) -> Dict[str, Any]:
         """
-        Classify a pair that has already passed candidate blocking.
+        Classify candidate pair after entity and metric compatibility checks.
         """
         value_a = cls._value_number(getattr(fact_a, "raw_value", None))
         value_b = cls._value_number(getattr(fact_b, "raw_value", None))
 
-        # Non-numeric comparisons are deferred to the LLM arbiter
+        # Non-numeric facts remain unresolved
         if value_a is None or value_b is None:
             return {
                 "status": "UNCERTAIN",
                 "reasoning": (
-                    "The facts are semantically similar, but at least "
-                    "one value is non-numeric and requires semantic "
-                    "comparison."
+                    "The facts share a metric identity, but at least "
+                    "one value is non-numeric."
                 ),
                 "confidence": 4,
                 "resolution_method": "DETERMINISTIC",
             }
 
-        # Numerically equivalent values
-        tolerance = max(abs(value_a), abs(value_b), 1.0) * 0.001
+        unit_a = cls._unit_type(fact_a)
+        unit_b = cls._unit_type(fact_b)
 
-        if abs(value_a - value_b) <= tolerance:
+        # Percentages cannot corroborate currency or raw counts
+        if unit_a != unit_b:
+            return {
+                "status": "UNCERTAIN",
+                "reasoning": (
+                    "The metric names are similar, but the values "
+                    "use incompatible unit types."
+                ),
+                "confidence": 7,
+                "resolution_method": "DETERMINISTIC",
+            }
+
+        tolerance = max(abs(value_a), abs(value_b), 1.0) * 0.001
+        values_equal = abs(value_a - value_b) <= tolerance
+
+        # Same explicit context + same value
+        if values_equal and cls._same_context(fact_a, fact_b):
             return {
                 "status": "CORROBORATION",
                 "reasoning": (
-                    "The facts refer to the same semantic metric and "
-                    "have equivalent normalized numeric values."
+                    "The facts refer to the same semantic metric under "
+                    "the same explicit context and have equivalent normalized values."
                 ),
                 "confidence": 9,
                 "resolution_method": "DETERMINISTIC",
             }
 
-        # Different time/scope explains different values
-        if cls._context_differs(fact_a, fact_b):
-            return {
-                "status": "CONTEXTUAL_RESOLUTION",
-                "reasoning": (
-                    "The values differ, but the facts have different "
-                    "explicit time or scope context."
-                ),
-                "confidence": 8,
-                "resolution_method": "DETERMINISTIC",
-            }
+        # Same explicit context + different value
+        has_explicit_context = bool(
+            getattr(fact_a, "time", None)
+            or getattr(fact_b, "time", None)
+            or getattr(fact_a, "scope", None)
+            or getattr(fact_b, "scope", None)
+        )
 
-        # Same explicit context + materially different values
-        if cls._same_context(fact_a, fact_b):
+        if not values_equal and cls._same_context(fact_a, fact_b) and has_explicit_context:
             return {
                 "status": "CONTRADICTION",
                 "reasoning": (
                     "The facts refer to the same semantic metric under "
-                    "the same explicit context but have materially "
-                    "different normalized numeric values."
+                    "the same explicit context but have materially different values."
                 ),
                 "confidence": 9,
+                "resolution_method": "DETERMINISTIC",
+            }
+
+        # Contextual resolution: explicit disagreement in time or scope
+        if not values_equal and cls._has_explicit_context_difference(fact_a, fact_b):
+            return {
+                "status": "CONTEXTUAL_RESOLUTION",
+                "reasoning": (
+                    "The same metric has different values under "
+                    "explicitly different time or scope contexts."
+                ),
+                "confidence": 7,
+                "resolution_method": "DETERMINISTIC",
+            }
+
+        # Equal values with incomplete context
+        if values_equal:
+            return {
+                "status": "UNCERTAIN",
+                "reasoning": (
+                    "The normalized values are equivalent, "
+                    "but explicit context is incomplete."
+                ),
+                "confidence": 6,
                 "resolution_method": "DETERMINISTIC",
             }
 
         return {
             "status": "UNCERTAIN",
             "reasoning": (
-                "The facts appear comparable, but their context is "
-                "insufficient for deterministic comparison."
+                "The facts appear comparable, but there is not enough "
+                "explicit context to determine whether the difference is a "
+                "contradiction or a contextual difference."
             ),
             "confidence": 4,
             "resolution_method": "DETERMINISTIC",
         }
 
     def find_and_classify(
-        self, facts: List[Any]
+        self,
+        facts: List[Any],
     ) -> List[Tuple[CandidatePair, Dict[str, Any]]]:
         """
-        Pipeline:
-            1. Embedding similarity generates broad candidates.
-            2. Entity compatibility removes unrelated entities.
-            3. Attribute compatibility removes different metrics.
-            4. Deterministic classification handles obvious relationships.
+        Generate embedding candidates, then apply conservative
+        entity/metric blocking before relationship classification.
         """
         candidates = self.embedding_index.find_candidates(
             facts,
@@ -347,18 +443,15 @@ class FactMatcher:
             fact_a = pair.fact_a
             fact_b = pair.fact_b
 
-            # Never match facts that failed extraction/grounding
             if getattr(fact_a, "status", "VALID") != "VALID":
                 continue
 
             if getattr(fact_b, "status", "VALID") != "VALID":
                 continue
 
-            # Entity blocking
             if not self._entity_compatible(fact_a, fact_b):
                 continue
 
-            # Metric/attribute blocking
             if not self._attribute_compatible(fact_a, fact_b):
                 continue
 
