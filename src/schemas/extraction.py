@@ -4,20 +4,18 @@ from pydantic import BaseModel, Field
 
 
 class ExtractedFact(BaseModel):
-    entity: str = ""
-    attribute: str = ""
-    raw_value: str = ""
+    entity: Optional[str] = None
+    attribute: Optional[str] = None
+    raw_value: Optional[str] = None
     unit: Optional[str] = None
     normalized_value: Optional[float] = None
     time: Optional[str] = None
     scope: Optional[str] = None
     qualifier: Optional[str] = None
 
-    # Prose grounding
-    exact_quote: str = ""
-    evidence_id: str = ""
+    exact_quote: Optional[str] = None
+    evidence_id: Optional[str] = None
 
-    # Table grounding
     table_ref: Optional[str] = None
     row_index: Optional[int] = None
     column_index: Optional[int] = None
@@ -28,6 +26,7 @@ class ExtractedFact(BaseModel):
         ge=1,
         le=10,
     )
+
     status: str = "VALID"
 
 
