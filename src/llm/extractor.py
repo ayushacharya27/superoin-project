@@ -248,14 +248,33 @@ class FactExtractor:
         context: CompactContext,
     ) -> List[ExtractedFact]:
         """
-        Run exactly one structured Mistral extraction call for the
-        supplied context, then validate provenance deterministically.
+        Run one structured Mistral extraction call and validate
+        provenance deterministically.
+
+        Malformed structured output is treated as an extraction
+        failure for this context rather than crashing the API.
         """
         evidence_text = self._serialize_context(context)
 
-        response: FactExtractionBatch = self.chain.invoke(
-            {"evidence": evidence_text}
-        )
+        try:
+            response: FactExtractionBatch = self.chain.invoke(
+                {
+                    "evidence": evidence_text,
+                }
+            )
+        except Exception as exc:
+            print(
+                "[Extractor] Structured output failed: "
+                f"context={context.context_id} "
+                f"error={exc}"
+            )
+            return []
+
+        if not response or not response.facts:
+            print(
+                f"[Extractor] No facts returned: context={context.context_id}"
+            )
+            return []
 
         return self._ground(
             response.facts,
