@@ -30,9 +30,8 @@ Given multiple PDFs, the system:
 
 ## Demo
 
-**Live application:** `<add-render-url>`
 
-**3-minute video demo:** `<add-demo-video-link>`
+**3-minute video demo:** `https://drive.google.com/file/d/12z_Vge-ExUyAAGNuzIQ1p6NhhCttu8sR/view?usp=sharing`
 
 The demo covers:
 
@@ -44,6 +43,72 @@ The demo covers:
 6. Contradiction
 7. Contextual resolution
 8. Extraction/reasoning failure handling
+
+---
+
+---
+
+# Running locally
+
+## Requirements
+
+- Python 3.10+
+- Mistral API key
+- Gemini API key
+
+## Installation
+
+```bash
+git clone https://github.com/ayushacharya27/superoin-project
+cd fact-knowledge-layer
+
+python -m venv venv
+source venv/bin/activate
+```
+
+Windows:
+
+```bash
+venv\\Scripts\\activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Create `.env`:
+
+```env
+LLM_PROVIDER=mistral
+LLM_MODEL=ministral-3b-latest
+MISTRAL_API_KEY=your_mistral_key
+
+GEMINI_API_KEY=your_gemini_key
+GEMINI_MODEL=gemini-2.5-flash
+
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+EMBEDDING_BATCH_SIZE=64
+
+MAX_CONTEXT_TOKENS=2500
+CHARS_PER_TOKEN=4
+MAX_EVIDENCE_PER_GROUP=30
+
+SQLITE_DB_PATH=data/facts.sqlite
+```
+
+Start the application:
+
+```bash
+uvicorn src.api.app:app --reload
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000
+```
 
 ---
 
@@ -336,97 +401,6 @@ The web interface supports:
 - cross-document relationship inspection
 - follow-up questions against the analysis
 
----
-
-# Running locally
-
-## Requirements
-
-- Python 3.10+
-- Mistral API key
-- Gemini API key
-
-## Installation
-
-```bash
-git clone <your-repository-url>
-cd fact-knowledge-layer
-
-python -m venv venv
-source venv/bin/activate
-```
-
-Windows:
-
-```bash
-venv\\Scripts\\activate
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Create `.env`:
-
-```env
-LLM_PROVIDER=mistral
-LLM_MODEL=ministral-3b-latest
-MISTRAL_API_KEY=your_mistral_key
-
-GEMINI_API_KEY=your_gemini_key
-GEMINI_MODEL=gemini-2.5-flash
-
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-EMBEDDING_BATCH_SIZE=64
-
-MAX_CONTEXT_TOKENS=2500
-CHARS_PER_TOKEN=4
-MAX_EVIDENCE_PER_GROUP=30
-
-SQLITE_DB_PATH=data/facts.sqlite
-```
-
-Start the application:
-
-```bash
-uvicorn src.api.app:app --reload
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
----
-
-# Render deployment
-
-### Build command
-
-```bash
-pip install -r requirements.txt
-```
-
-### Start command
-
-```bash
-uvicorn src.api.app:app --host 0.0.0.0 --port $PORT
-```
-
-### Health check
-
-```text
-/health
-```
-
-API keys should be configured as Render environment variables.
-
-**Never commit `.env` or API keys to GitHub.**
-
----
 
 # Project structure
 
