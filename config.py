@@ -8,6 +8,8 @@ class Settings(BaseSettings):
 
     LLM_MODEL: str = "ministral-3b-latest"
     MISTRAL_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
