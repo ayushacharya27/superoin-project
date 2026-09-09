@@ -1,7 +1,7 @@
 # Superjoin — Fact Knowledge Layer
 
 <p align="center">
-  <img src="./superjoin.png" alt="Superjoin" width="220">
+  <img src="Files/superjoin.png" alt="Superjoin" width="220">
 </p>
 
 <p align="center"><strong>Evidence-grounded cross-document fact extraction and relationship reasoning</strong></p>
@@ -51,19 +51,19 @@ The demo covers:
 
 ### System architecture
 
-![System architecture](./arch.png)
+![System architecture](Files/arch.png)
 
 ### Backend / API
 
-![Backend](./backend.png)
+![Backend](Files/backend.png)
 
 ### Web interface
 
-![User interface](./ui.png)
+![User interface](Files/ui.png)
 
 ### Extracted facts and evidence
 
-![After extraction](./after_extraction.png)
+![After extraction](Files/after_extraction.png)
 
 ---
 
