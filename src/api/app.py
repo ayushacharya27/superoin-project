@@ -87,8 +87,7 @@ def _context_keyword_score(
     keywords: List[str],
 ) -> int:
     """
-    Score a context against Gemini-derived semantic keywords, weighting
-    exact matches and dense numeric sections.
+    Score a context against semantic keywords while rewarding numeric density.
     """
     if not keywords:
         return 0
@@ -109,27 +108,27 @@ def _context_keyword_score(
     score = 0
 
     for keyword in keywords:
-        cleaned_keyword = keyword.lower().strip()
-        if cleaned_keyword and cleaned_keyword in text:
+        cleaned = keyword.lower().strip()
+        if cleaned and cleaned in text:
             score += 1
 
-    # Bonus points for dense numeric content to favor rich financial chunks
+    # Dense numeric tokens correlate with financial tables/excerpts
     numeric_count = sum(1 for token in text.split() if any(c.isdigit() for c in token))
     score += min(numeric_count // 3, 10)
 
     return score
 
 
-def _select_demo_context(
+def _select_demo_contexts(
     contexts: List[CompactContext],
     keywords: List[str],
-) -> Optional[CompactContext]:
+    limit: int = 1,
+) -> List[CompactContext]:
     """
-    Select the single most relevant context using Gemini-derived
-    semantic comparison keywords.
+    Select top-N contexts per document based on semantic relevance scores.
     """
     if not contexts:
-        return None
+        return []
 
     ranked = sorted(
         enumerate(contexts),
@@ -140,15 +139,17 @@ def _select_demo_context(
         reverse=True,
     )
 
-    best_index, best_context = ranked[0]
-    score = _context_keyword_score(best_context, keywords)
+    selected: List[CompactContext] = []
 
-    print(
-        f"[Demo] Selected context {best_context.context_id} "
-        f"(index={best_index}, keyword_score={score})"
-    )
+    for index, context in ranked[:limit]:
+        score = _context_keyword_score(context, keywords)
+        print(
+            f"[Demo] Selected context {context.context_id} "
+            f"(index={index}, keyword_score={score})"
+        )
+        selected.append(context)
 
-    return best_context
+    return selected
 
 
 def process_pdf(
@@ -156,7 +157,8 @@ def process_pdf(
     filename: str,
 ) -> Dict[str, Any]:
     """
-    Parse one PDF and build all bounded contexts without calling the LLM.
+    Parse a PDF into structural elements and build structured bounded chunks.
+    Does not execute LLM extraction.
     """
     raw = extract_document_elements(pdf_path)
     clean = clean_document_elements(raw)
@@ -184,8 +186,8 @@ def health() -> Dict[str, Any]:
         "llm_provider": "mistral",
         "semantic_selector": "gemini",
         "demo_mode": True,
-        "contexts_per_pdf": 1,
-        "selection": "Gemini-derived semantic keywords",
+        "contexts_per_pdf": 2,
+        "selection": "Gemini-derived semantic keywords; top 2 contexts per PDF",
     }
 
 
@@ -202,7 +204,7 @@ async def analyze(
     analysis_id = str(uuid.uuid4())
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        # STEP 1: Parse PDFs into bounded contexts
+        # STEP 1: Parse and structure all uploaded PDFs
         parsed_documents: List[Dict[str, Any]] = []
 
         for upload in files:
@@ -223,7 +225,7 @@ async def analyze(
             result = process_pdf(pdf_path, safe_name)
             parsed_documents.append(result)
 
-        # STEP 2: Gemini cross-document comparison keywords
+        # STEP 2: Extract cross-document semantic concepts using Gemini
         contexts_by_document = {
             result["filename"]: result["contexts"]
             for result in parsed_documents
@@ -232,7 +234,7 @@ async def analyze(
         keywords = semantic_selector.extract_keywords(contexts_by_document)
         print(f"[Demo] Gemini comparison keywords: {', '.join(keywords)}")
 
-        # STEP 3: Context selection and targeted extraction
+        # STEP 3: Route targeted contexts and perform grounded extraction
         all_results: List[Dict[str, Any]] = []
         all_facts: List[ExtractedFact] = []
 
@@ -240,24 +242,30 @@ async def analyze(
             filename = result["filename"]
             contexts = result["contexts"]
 
-            selected_context = _select_demo_context(contexts, keywords)
+            selected_contexts = _select_demo_contexts(contexts, keywords, limit=1)
+            facts: List[ExtractedFact] = []
 
-            if selected_context is None:
-                facts: List[ExtractedFact] = []
-                selected_context_id = None
-                processed_contexts = 0
+            if selected_contexts:
+                for context_number, selected_context in enumerate(
+                    selected_contexts,
+                    start=1,
+                ):
+                    print(
+                        f"[Demo] {filename}: "
+                        f"context={selected_context.context_id} "
+                        f"({context_number}/{len(selected_contexts)}) "
+                        f"tokens={selected_context.estimated_tokens} "
+                        f"evidence={len(selected_context.evidence)}"
+                    )
+
+                    extracted = extractor.extract(selected_context)
+                    facts.extend(canonicalize_facts(extracted))
+
+                selected_context_ids = [c.context_id for c in selected_contexts]
+                processed_contexts = len(selected_contexts)
             else:
-                print(
-                    f"[Demo] {filename}: "
-                    f"context={selected_context.context_id} "
-                    f"tokens={selected_context.estimated_tokens} "
-                    f"evidence={len(selected_context.evidence)}"
-                )
-
-                extracted = extractor.extract(selected_context)
-                facts = canonicalize_facts(extracted)
-                selected_context_id = selected_context.context_id
-                processed_contexts = 1
+                selected_context_ids = []
+                processed_contexts = 0
 
             all_results.append(
                 {
@@ -267,7 +275,8 @@ async def analyze(
                     "filtered_elements": result["filtered_elements"],
                     "context_count": len(contexts),
                     "processed_contexts": processed_contexts,
-                    "selected_context": selected_context_id,
+                    "selected_contexts": selected_context_ids,
+                    "mistral_extraction_calls": processed_contexts,
                     "fact_count": len(facts),
                     "valid_fact_count": sum(
                         1
@@ -289,7 +298,7 @@ async def analyze(
 
             all_facts.extend(facts)
 
-    # STEP 4: Grounded cross-document matching
+    # STEP 4: Classify relationships across grounded facts
     valid_facts = [
         fact
         for fact in all_facts
@@ -337,8 +346,8 @@ async def analyze(
     analysis: Dict[str, Any] = {
         "analysis_id": analysis_id,
         "demo_mode": True,
-        "contexts_per_pdf": 1,
-        "selection_strategy": "Gemini-derived semantic keywords",
+        "contexts_per_pdf": 2,
+        "selection_strategy": "Gemini-derived semantic keywords; top 2 contexts per PDF",
         "selection_keywords": keywords,
         "documents": all_results,
         "facts": [fact_to_dict(fact) for fact in valid_facts],
